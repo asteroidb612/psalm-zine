@@ -29,7 +29,9 @@ jobs:
         env:
           PSALMS_NO_SANDBOX: "1"
         run: |
-          START=$(date -d sunday +%F)   # today if Sunday, else the coming Sunday
+          # Sunday that starts the current week; on Saturday (the scheduled run) look ahead to tomorrow
+          DOW=$(date +%w)
+          if [ "$DOW" = 6 ]; then START=$(date -d tomorrow +%F); else START=$(date -d "-$DOW days" +%F); fi
           mkdir -p site
           xvfb-run -a uv run psalms.py --start "$START" --out site/psalms.pdf | tee build.log
           ! grep -q WARNING build.log   # fail (keep last week's site) if any panel overflowed
