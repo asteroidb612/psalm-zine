@@ -1,0 +1,50 @@
+name: Weekly psalms
+
+on:
+  schedule:
+    - cron: "0 12 * * 6"   # Saturdays 12:00 UTC, ready for Sunday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install Chrome and Xvfb
+        run: |
+          # ubuntu-latest ships Chrome; only xvfb is missing (real, non-headless Chrome passes the site's browser check best)
+          sudo apt-get update && sudo apt-get install -y xvfb
+          google-chrome --version
+      - name: Build PDF
+        env:
+          PSALMS_NO_SANDBOX: "1"
+        run: |
+          START=$(date -d sunday +%F)   # today if Sunday, else the coming Sunday
+          mkdir -p site
+          xvfb-run -a uv run psalms.py --start "$START" --out site/psalms.pdf | tee build.log
+          ! grep -q WARNING build.log   # fail (keep last week's site) if any panel overflowed
+          test "$(stat -c %s site/psalms.pdf)" -gt 2000
+          echo "{\"start\": \"$START\"}" > site/latest.json
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
