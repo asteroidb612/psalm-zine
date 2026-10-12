@@ -1,0 +1,254 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to fold the Weekly Psalms</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 16px/1.4 system-ui, sans-serif; background: #e9e6df; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; }
+  #ui { position: fixed; left: 0; right: 0; bottom: 0; padding: .75rem 1rem; background: rgba(255,255,255,.88);
+        backdrop-filter: blur(6px); display: grid; gap: .5rem; }
+  #caption b { display: block; font-size: 1.05rem; }
+  #row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; padding: .3rem .8rem; border: 0; border-radius: 6px; background: #222; color: #fff; cursor: pointer; }
+  input[type=range] { flex: 1; min-width: 120px; }
+  a { color: #222; }
+  label { font-size: .85rem; white-space: nowrap; }
+</style>
+<div id="stage"></div>
+<div id="ui">
+  <div id="caption"><b></b><span></span></div>
+  <div id="row">
+    <button id="prev">&#9664; Step</button>
+    <button id="play">Pause</button>
+    <button id="next">Step &#9654;</button>
+    <input id="scrub" type="range" min="0" max="1" step="0.0005" value="0">
+    <label><input id="auto" type="checkbox" checked> Auto camera</label>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import * as pdfjs from "./vendor/pdf.min.mjs";
+pdfjs.GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs";
+
+// ---- geometry: 4x2 grid of letter-landscape panels, in inches ----------------------------
+const COLS = 4, ROWS = 2;
+const W = 11 / COLS, H = 8.5 / ROWS;
+const EPS = 0.03;                        // paper "thickness" so stacked layers don't z-fight
+
+// ---- panel textures: slice the real PDF, or fall back to numbered placeholders -----------
+async function panelCanvases() {
+  const out = [];
+  try {
+    const pdf = await pdfjs.getDocument("psalms.pdf").promise;
+    const page = await pdf.getPage(1);
+    const vp = page.getViewport({ scale: 3 });
+    const full = document.createElement("canvas");
+    full.width = vp.width; full.height = vp.height;
+    await page.render({ canvasContext: full.getContext("2d"), viewport: vp }).promise;
+    const pw = full.width / COLS, ph = full.height / ROWS;
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const cv = document.createElement("canvas");
+      cv.width = pw; cv.height = ph;
+      cv.getContext("2d").drawImage(full, c * pw, r * ph, pw, ph, 0, 0, pw, ph);
+      out.push(cv);
+    }
+  } catch (e) {
+    console.warn("psalms.pdf not loaded, using placeholders", e);
+    for (let i = 0; i < ROWS * COLS; i++) {
+      const cv = document.createElement("canvas"); cv.width = 330; cv.height = 510;
+      const g = cv.getContext("2d");
+      g.fillStyle = "#fffdf8"; g.fillRect(0, 0, 330, 510);
+      g.fillStyle = "#333"; g.font = "bold 160px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText(i + 1, 165, 255);
+      out.push(cv);
+    }
+  }
+  return out;
+}
+
+// ---- scene ---------------------------------------------------------------------------------
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9e6df);
+const camera = new THREE.PerspectiveCamera(35, 1, 2, 100);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xb8b2a4, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(-4, 10, 6);
+scene.add(sun);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const textures = (await panelCanvases()).map(cv => {
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+});
+
+const planeGeo = new THREE.PlaneGeometry(W, H);
+const backMat = new THREE.MeshLambertMaterial({ color: 0xf1ece0, side: THREE.BackSide });
+
+// Panel group: origin at the panel centre, lying flat in the XZ plane (front face up, top of
+// the panel toward -Z). Row 0 is the top row.
+function makePanel(r, c) {
+  const g = new THREE.Group();
+  const front = new THREE.Mesh(planeGeo, new THREE.MeshLambertMaterial({ map: textures[r * COLS + c] }));
+  const back = new THREE.Mesh(planeGeo, backMat);
+  for (const m of [front, back]) { m.rotation.x = -Math.PI / 2; g.add(m); }
+  return g;
+}
+
+// A hinge joins child panel to parent panel. `pivot` sits on the crease and is what rotates;
+// the child hangs off it. `axis` is the crease direction, `at` the crease position in the
+// parent's frame, `reach` the child's centre offset from the crease.
+function hinge(parent, child, axis, at, reach) {
+  const pivot = new THREE.Group();
+  pivot.position.copy(at);
+  parent.add(pivot);
+  pivot.add(child);
+  child.position.copy(reach);
+  const h = { pivot, child, axis, reach: reach.clone(),
+    set(angle) {
+      pivot.rotation[axis] = angle;
+      // keep stacked layers apart: child sits above the parent when it folds up (angle > 0)
+      child.position.y = -Math.sign(angle) * EPS * Math.min(1, Math.abs(angle) / Math.PI);
+    } };
+  return h;
+}
+
+const root = new THREE.Group();
+scene.add(root);
+const P = [[], []];
+for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) P[r][c] = makePanel(r, c);
+root.add(P[1][0]);
+P[1][0].position.set(-1.5 * W, 0, H / 2);
+
+const right = new THREE.Vector3(W / 2, 0, 0), step = new THREE.Vector3(W, 0, 0);
+const hm = hinge(P[1][0], P[0][0], "x", new THREE.Vector3(0, 0, -H / 2), new THREE.Vector3(0, 0, -H / 2));
+const chain = row => [0, 1, 2].map(c => hinge(P[row][c], P[row][c + 1], "z", right, new THREE.Vector3(W / 2, 0, 0)));
+const creases = [chain(1), chain(0)];  // each: [x=-1, x=0, x=+1] hinges, bottom row then top row
+
+// the cut: a dark bar along the top edge of the two middle bottom panels
+const cutMat = new THREE.MeshBasicMaterial({ color: 0xd32f2f });
+const cutBars = [1, 2].map(c => {
+  const bar = new THREE.Mesh(new THREE.PlaneGeometry(W, 0.06), cutMat);
+  bar.rotation.x = -Math.PI / 2;
+  bar.position.set(-W / 2, 0.004, -H / 2 + 0.03);  // anchored at left end so scale.x grows rightward
+  bar.geometry.translate(W / 2, 0, 0);
+  const holder = new THREE.Group();
+  holder.add(bar);
+  P[1][c].add(holder);
+  bar.visible = false;
+  return bar;
+});
+
+// ---- the state -> pose mapping ---------------------------------------------------------------
+// mid:  fold the top row over the bottom row along the long crease (0..PI)
+// acc:  accordion-fold the columns into quarters (0..1)
+// cut:  how much of the slit has been cut (0..1)
+// bow:  ends pushed together; middle panels bow out into a cross (0..PI/2)
+// spine: close the cross flat around its centre (0..1)
+function pose(s) {
+  hm.set(s.mid);
+  const a = [s.acc * Math.PI - s.bow - s.spine * Math.PI / 2,
+             -s.acc * Math.PI + 2 * s.bow,
+             s.acc * Math.PI - s.bow - s.spine * Math.PI / 2];
+  for (const row of creases) row.forEach((h, i) => h.set(a[i]));
+  root.position.x = W * (1 - Math.cos(s.bow));
+  root.position.z = -(H / 4) * (1 - Math.cos(s.mid));
+  cutMat.color.set(s.cut >= 1 ? 0x333333 : 0xd32f2f);
+  cutBars.forEach((b, i) => {
+    const p = Math.min(1, Math.max(0, s.cut * 2 - i));  // left panel first, then right
+    b.visible = p > 0 && s.mid < 0.01;
+    b.scale.x = Math.max(p, 1e-4);
+  });
+}
+
+// ---- timeline -------------------------------------------------------------------------------
+const PI = Math.PI;
+const Z = { mid: 0, acc: 0, cut: 0, bow: 0, spine: 0 };
+const TOP = { az: 0, el: 62, dist: 21 }, TILT = { az: 35, el: 30, dist: 19 }, SIDE = { az: 60, el: 20, dist: 13 }, END = { az: 40, el: 35, dist: 8 };
+const steps = [
+  { t: "The sheet", d: "One letter page, printed landscape: 4 panels across, 2 down.", dur: 1.5, to: {}, cam: TOP },
+  { t: "1. Fold in half, the long way", d: "Top edge over the bottom edge, then crease firmly.", dur: 2.2, to: { mid: PI }, cam: TILT },
+  { t: "2. Unfold", d: "Open it back out. You now have a crease across the middle.", dur: 1.6, to: { mid: 0 }, cam: TOP },
+  { t: "3. Fold into quarters", d: "Accordion-fold the short way so every column is creased.", dur: 2.4, to: { acc: 1 }, cam: TILT },
+  { t: "4. Unfold", d: "Open it flat again.", dur: 1.6, to: { acc: 0 }, cam: TOP },
+  { t: "5. Cut the slit", d: "Cut along the middle crease, across the two middle panels only. Don't cut the outer panels.", dur: 2.6, to: { cut: 1 }, cam: TOP },
+  { t: "6. Fold in half again", d: "Long way, with the slit on the folded edge.", dur: 2.2, to: { mid: PI }, cam: TILT },
+  { t: "7. Push the ends together", d: "Hold the two ends and push them toward the middle. The slit opens and the middle bows out into a cross.", dur: 3.4, to: { bow: PI / 2 }, cam: SIDE },
+  { t: "8. Flatten into a booklet", d: "Fold the four leaves around the centre so they stack like pages.", dur: 3, to: { spine: 1 }, cam: SIDE },
+  { t: "Done", d: "Fold it closed and you have an 8-page booklet.", dur: 1.8, to: {}, cam: END },
+];
+const ease = x => x * x * (3 - 2 * x);
+{ // resolve cumulative from/to states
+  let cur = { ...Z }, cam = TOP, t = 0;
+  for (const s of steps) {
+    s.from = { ...cur };
+    s.end = { ...cur, ...s.to };
+    s.camFrom = cam;
+    s.start = t;
+    t += s.dur; cur = s.end; cam = s.cam;
+  }
+}
+const TOTAL = steps.reduce((a, s) => a + s.dur, 0);
+
+function stateAt(T) {
+  T = Math.min(Math.max(T, 0), TOTAL);
+  const s = steps.find(s => T <= s.start + s.dur) || steps[steps.length - 1];
+  const k = ease((T - s.start) / s.dur);
+  const st = {};
+  for (const key in Z) st[key] = s.from[key] + (s.end[key] - s.from[key]) * k;
+  const cam = {};
+  for (const key of ["az", "el", "dist"]) cam[key] = s.camFrom[key] + (s.cam[key] - s.camFrom[key]) * k;
+  return { s, st, cam };
+}
+
+// ---- UI + loop ------------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+let T = 0, playing = true;
+const qT = new URLSearchParams(location.search).get("t");
+if (qT !== null) { T = +qT; playing = false; }
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+controls.addEventListener("start", () => { $("auto").checked = false; });
+$("play").onclick = () => { if (T >= TOTAL) T = 0; playing = !playing; };
+$("next").onclick = () => { const i = stateAt(T).s; const n = steps[steps.indexOf(i) + 1]; T = n ? n.start : 0; playing = false; };
+$("prev").onclick = () => { const i = stateAt(T).s; const idx = steps.indexOf(i); T = (T - i.start > 0.3 ? i : steps[Math.max(0, idx - 1)]).start; playing = false; };
+$("scrub").oninput = e => { T = +e.target.value * TOTAL; playing = false; };
+
+let last = performance.now();
+renderer.setAnimationLoop(now => {
+  const dt = (now - last) / 1000; last = now;
+  if (playing) { T += dt; if (T >= TOTAL) { T = TOTAL; playing = false; } }
+  const { s, st, cam } = stateAt(T);
+  pose(st);
+  if ($("auto").checked) {
+    const az = cam.az * PI / 180, el = cam.el * PI / 180;
+    camera.position.set(cam.dist * Math.sin(az) * Math.cos(el), cam.dist * Math.sin(el), cam.dist * Math.cos(az) * Math.cos(el));
+    controls.target.set(0, 0, 0);
+  }
+  controls.update();
+  $("caption").firstElementChild.textContent = s.t;
+  $("caption").lastElementChild.textContent = s.d;
+  $("play").textContent = playing ? "Pause" : (T >= TOTAL ? "Replay" : "Play");
+  $("scrub").value = T / TOTAL;
+  renderer.render(scene, camera);
+});
+</script>

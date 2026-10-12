@@ -7,14 +7,14 @@
   header { padding: .75rem 1rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
   h1 { font-size: 1.1rem; margin: 0; }
   a.btn { background: #222; color: #fff; padding: .4rem .8rem; border-radius: 6px; text-decoration: none; }
-  embed { flex: 1; width: 100%; border: 0; }
+  iframe { flex: 1; width: 100%; border: 0; }
 </style>
 <header>
   <h1>Weekly Psalms <span id="week"></span></h1>
   <a class="btn" href="psalms.pdf" download>Download PDF</a>
   <small>Print landscape, then fold into 8.</small>
 </header>
-<embed src="psalms.pdf" type="application/pdf">
+<iframe src="fold.html" title="How to fold the weekly psalms"></iframe>
 <script>
   fetch("latest.json").then(r => r.json()).then(j => {
     const d = new Date(j.start + "T12:00:00");
