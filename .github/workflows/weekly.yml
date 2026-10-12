@@ -1,6 +1,8 @@
 name: Weekly psalms
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 12 * * 6"   # Saturdays 12:00 UTC, ready for Sunday
   workflow_dispatch:
