@@ -12,6 +12,7 @@
 <header>
   <h1>Weekly Psalms <span id="week"></span></h1>
   <a class="btn" href="psalms.pdf" download>Download PDF</a>
+  <a class="btn" href="psalms-next.pdf" download id="next">Download next week's PDF</a>
   <small>Print landscape, then fold into 8.</small>
 </header>
 <iframe src="fold.html" title="How to fold the weekly psalms"></iframe>
@@ -20,5 +21,10 @@
     const d = new Date(j.start + "T12:00:00");
     document.getElementById("week").textContent =
       "– week of " + d.toLocaleDateString(undefined, { month: "long", day: "numeric" });
+    if (j.next) {
+      const n = new Date(j.next + "T12:00:00");
+      document.getElementById("next").textContent =
+        "Download next week's PDF (" + n.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ")";
+    }
   }).catch(() => {});
 </script>

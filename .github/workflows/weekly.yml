@@ -35,10 +35,13 @@ jobs:
           DOW=$(date +%w)
           if [ "$DOW" = 6 ]; then START=$(date -d tomorrow +%F); else START=$(date -d "-$DOW days" +%F); fi
           mkdir -p site
+          NEXT=$(date -d "$START + 7 days" +%F)
           xvfb-run -a uv run psalms.py --start "$START" --out site/psalms.pdf | tee build.log
+          xvfb-run -a uv run psalms.py --start "$NEXT" --out site/psalms-next.pdf | tee -a build.log
           ! grep -q WARNING build.log   # fail (keep last week's site) if any panel overflowed
           test "$(stat -c %s site/psalms.pdf)" -gt 2000
-          echo "{\"start\": \"$START\"}" > site/latest.json
+          test "$(stat -c %s site/psalms-next.pdf)" -gt 2000
+          echo "{\"start\": \"$START\", \"next\": \"$NEXT\"}" > site/latest.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
