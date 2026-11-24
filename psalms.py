@@ -92,7 +92,8 @@ class Browser:
         self.profile.cleanup()
 
     def page(self, d: date, timeout=60) -> str:
-        self.tab.Page.navigate(url=URL.format(d))
+        url = URL.format(d)
+        self.tab.Page.navigate(url=url)
         end = time.time() + timeout
         while time.time() < end:  # the site may run a short browser check before showing the page
             time.sleep(1)
@@ -100,6 +101,14 @@ class Browser:
             page = r.get("result", {}).get("value", "")
             if "Responsorial Psalm" in page:
                 return page
+            # Days with several sets of readings (e.g. Thanksgiving) show only links to each
+            # option, like .../readings/112626-Ordinary; prefer the regular weekday readings.
+            options = re.findall(r'href="(https://bible\.usccb\.org/bible/readings/' + f"{d:%m%d%y}"
+                                 + r'-[^"]+)"', page)
+            if options and url not in options:
+                url = next((o for o in options if o.endswith("-Ordinary")), options[0])
+                print(f"{d}: several sets of readings; using {url.rsplit('/', 1)[1]}", file=sys.stderr)
+                self.tab.Page.navigate(url=url)
         raise SystemExit(f"{d}: page never showed the readings (check the Chrome window)")
 
 
@@ -108,10 +117,15 @@ def clean(s: str) -> str:
 
 
 def section(page: str, name: str, d: date):
-    m = re.search(
-        r'<h3 class="name">\s*' + name + r'\s*</h3>.*?<div class="address">(.*?)</div>.*?'
-        r'<div class="content-body">(.*?)</div>',
-        page, re.S)
+    """Match a reading block; group 1 is the citation, group 2 the text."""
+    head = r'<h3 class="name">\s*' + name + r'\s*</h3>'
+    m = (
+        # current markup (Nov 2026): <p class="address">…</p></header><p>…</p> up to the next block
+        re.search(head + r'\s*<p class="address">(.*?)</p>\s*</header>(.*?)(?=<header|</div>)', page, re.S)
+        # older markup: <div class="address">…</div> … <div class="content-body">…</div>
+        or re.search(head + r'.*?<div class="address">(.*?)</div>.*?<div class="content-body">(.*?)</div>',
+                     page, re.S)
+    )
     if not m:
         raise SystemExit(f"{d}: could not parse the {name} block")
     return m
